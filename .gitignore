@@ -1,0 +1,6 @@
+node_modules/
+*.tgz
+.pi
+.cursor
+.DS_Store
+.idea
