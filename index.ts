@@ -8,7 +8,7 @@
  * CURSOR_API_KEY environment variable) before using this provider.
  *
  * Usage:
- *   pi install npm:pi-cursor-provider
+ *   pi install npm:@netandreus/pi-cursor-provider
  *   # Then /model cursor/<model-id>, e.g. /model cursor/sonnet-4.5-thinking
  *
  * Configuration env vars:

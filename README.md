@@ -58,19 +58,19 @@ No separate API keys are needed for the models themselves. Authentication is han
 ### Option A — Install from npm (recommended)
 
 ```bash
-pi install npm:pi-cursor-provider
+pi install npm:@netandreus/pi-cursor-provider
 ```
 
 Or for project-local install:
 
 ```bash
-pi install npm:pi-cursor-provider -l
+pi install npm:@netandreus/pi-cursor-provider -l
 ```
 
 ### Option B — Try without installing
 
 ```bash
-pi -e npm:pi-cursor-provider
+pi -e npm:@netandreus/pi-cursor-provider
 ```
 
 ### Option C — Install from source
@@ -140,14 +140,14 @@ After loading the extension, select a Cursor model with the `/model` command:
 You can also specify the model on the command line:
 
 ```bash
-pi -e npm:pi-cursor-provider --provider cursor --model auto
+pi -e npm:@netandreus/pi-cursor-provider --provider cursor --model auto
 ```
 
 Or pipe a prompt non-interactively:
 
 ```bash
 echo "Explain the main function in this file" | \
-  pi -e npm:pi-cursor-provider --provider cursor --model sonnet-4.6
+  pi -e npm:@netandreus/pi-cursor-provider --provider cursor --model sonnet-4.6
 ```
 
 ---
@@ -199,7 +199,7 @@ Example:
 
 ```bash
 export CURSOR_AGENT_PATH=$HOME/.local/bin/agent
-pi -e npm:pi-cursor-provider --provider cursor --model auto
+pi -e npm:@netandreus/pi-cursor-provider --provider cursor --model auto
 ```
 
 ---
