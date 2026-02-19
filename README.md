@@ -14,6 +14,8 @@ A [Pi Coding Agent](https://github.com/badlogic/pi-mono) custom provider that ro
 
 No separate API keys are needed for the models themselves. Authentication is handled by the Cursor CLI using your existing Cursor account.
 
+![Pi with Cursor Agent — Auto model in Cursor IDE](screenshot.png)
+
 ---
 
 ## Contents
