@@ -1,45 +1,54 @@
 {
-    "name": "@netandreus/pi-cursor-provider",
-    "version": "0.1.1",
-    "author": {
-        "name": "Andrei Tokarchuk ",
-        "email": "netandreus@gmail.com",
-        "url": "https://tokarchuk.ru"
-    },
-    "description": "Pi Coding Agent custom provider that routes requests through the Cursor Agent CLI — use your Cursor subscription models (Claude, GPT, Gemini, Grok…) inside Pi.",
-    "type": "module",
-    "keywords": [
-      "pi-package",
-      "pi",
-      "cursor",
-      "llm",
-      "ai",
-      "custom-provider"
-    ],
-    "license": "MIT",
-    "repository": {
-      "type": "git",
-      "url": "https://github.com/netandreus/pi-cursor-provider.git"
-    },
-    "homepage": "https://github.com/netandreus/pi-cursor-provider#readme",
-    "bugs": {
-      "url": "https://github.com/netandreus/pi-cursor-provider/issues"
-    },
-    "files": [
-      "index.ts",
-      "README.md",
-      "LICENSE"
-    ],
-    "pi": {
-      "extensions": [
-        "./index.ts"
-      ]
-    },
-    "engines": {
-      "node": ">=20"
-    },
-    "peerDependencies": {
-      "@mariozechner/pi-ai": "*",
-      "@mariozechner/pi-coding-agent": "*"
-    }
+  "name": "@netandreus/pi-cursor-provider",
+  "version": "0.1.2",
+  "author": {
+    "name": "Andrei Tokarchuk ",
+    "email": "netandreus@gmail.com",
+    "url": "https://tokarchuk.ru"
+  },
+  "description": "Pi Coding Agent custom provider that routes requests through the Cursor Agent CLI — use your Cursor subscription models (Claude, GPT, Gemini, Grok…) inside Pi.",
+  "type": "module",
+  "keywords": [
+    "pi-package",
+    "pi",
+    "cursor",
+    "llm",
+    "ai",
+    "custom-provider"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/netandreus/pi-cursor-provider.git"
+  },
+  "homepage": "https://github.com/netandreus/pi-cursor-provider#readme",
+  "bugs": {
+    "url": "https://github.com/netandreus/pi-cursor-provider/issues"
+  },
+  "files": [
+    "index.ts",
+    "README.md",
+    "LICENSE"
+  ],
+  "pi": {
+    "extensions": [
+      "./index.ts"
+    ]
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "peerDependencies": {
+    "@mariozechner/pi-ai": "*",
+    "@mariozechner/pi-coding-agent": "*"
+  },
+  "scripts": {
+    "lint": "npx biome check",
+    "format": "npx biome check --write",
+    "typecheck": "npx tsc --noEmit"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.4.2",
+    "typescript": "^5.9.3"
   }
+}

@@ -1,0 +1,15 @@
+{
+  "$schema": "https://biomejs.dev/schemas/2.0.0/schema.json",
+  "organizeImports": {
+    "enabled": true
+  },
+  "linter": {
+    "enabled": true
+  },
+  "formatter": {
+    "enabled": true
+  },
+  "files": {
+    "ignore": ["node_modules"]
+  }
+}

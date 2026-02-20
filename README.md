@@ -24,15 +24,18 @@ No separate API keys are needed for the models themselves. Authentication is han
   - [Prerequisites](#prerequisites)
   - [Installation](#installation)
     - [Option A — Install from npm (recommended)](#option-a--install-from-npm-recommended)
-    - [Option B — Try without installing](#option-b--try-without-installing)
-    - [Option C — Install from source](#option-c--install-from-source)
+    - [Option B — Install from source](#option-b--install-from-source)
+    - [Option C — Try without installing](#option-c--try-without-installing)
+  - [Uninstall](#uninstall)
+    - [Option A — Installed from npm (recommended)](#option-a--installed-from-npm-recommended)
+    - [Option B — Installed from source](#option-b--installed-from-source)
   - [Authentication](#authentication)
     - [First-time setup](#first-time-setup)
     - [Auth commands inside Pi](#auth-commands-inside-pi)
     - [Verify auth](#verify-auth)
   - [Usage](#usage)
   - [Available models](#available-models)
-    - [Static fallback list (representative subset)](#static-fallback-list-representative-subset)
+    - [Model reference table](#model-reference-table)
   - [Configuration](#configuration)
   - [How it works](#how-it-works)
   - [Tool calls](#tool-calls)
@@ -69,22 +72,34 @@ Or for project-local install:
 pi install npm:@netandreus/pi-cursor-provider -l
 ```
 
-### Option B — Try without installing
+### Option B — Install from source
+
+From the repository root:
+
+```bash
+git clone https://github.com/netandreus/pi-cursor-provider.git
+cd pi-cursor-provider
+pi install .
+```
+
+### Option C — Try without installing
 
 ```bash
 pi -e npm:@netandreus/pi-cursor-provider
 ```
 
-### Option C — Install from source
+## Uninstall
 
-From the repository root:
-
+### Option A — Installed from npm (recommended)
 ```bash
-git clone https://github.com/anthropics/pi-cursor-provider.git
-cd pi-cursor-provider
-pi install .
+pi remove npm:@netandreus/pi-cursor-provider
 ```
 
+### Option B — Installed from source
+```bash
+# You can find installed path right after running "pi"
+pi remove ~/sandbox/pi-cursor-provider
+```
 ---
 
 ## Authentication
@@ -105,13 +120,13 @@ If `CURSOR_API_KEY` is set it is forwarded to every `agent` subprocess via `--ap
 
 ### Auth commands inside Pi
 
-After loading the extension you can manage auth without leaving Pi:
+After loading the extension you can manage auth without leaving Pi. These commands appear in the command palette (e.g. when you type `/cur`):
 
 | Command | Description |
 |---|---|
-| `/cursor-login` | Run `agent login` (prints auth URL; `NO_OPEN_BROWSER=1` prevents auto-open) |
-| `/cursor-status` | Show current auth status (equivalent to `agent status`) |
-| `/cursor-logout` | Sign out (equivalent to `agent logout`) |
+| `/cursor-login` | Log in to Cursor (runs `agent login`) |
+| `/cursor-status` | Show Cursor authentication status (runs `agent status`) |
+| `/cursor-logout` | Log out of Cursor (runs `agent logout`) |
 
 ### Verify auth
 
@@ -168,24 +183,31 @@ agent models
 
 Models whose id contains `-thinking`, `-high`, `-xhigh`, or `-max-high` are marked as reasoning models in Pi. All other metadata (contextWindow, maxTokens) is derived from the static lookup table or set to safe defaults (200k context / 32k max tokens) for models not in the table.
 
-### Static fallback list (representative subset)
+When you use a **canonical ID** (e.g. `claude-sonnet-4-5`), the provider can send the thinking variant to the CLI when Pi’s reasoning level is enabled.
 
-| Model ID | Name | Reasoning |
-|---|---|---|
-| `auto` | Auto | — |
-| `opus-4.6-thinking` | Claude 4.6 Opus (Thinking) | yes |
-| `opus-4.6` | Claude 4.6 Opus | — |
-| `sonnet-4.6-thinking` | Claude 4.6 Sonnet (Thinking) | yes |
-| `sonnet-4.6` | Claude 4.6 Sonnet | — |
-| `sonnet-4.5-thinking` | Claude 4.5 Sonnet (Thinking) | yes |
-| `sonnet-4.5` | Claude 4.5 Sonnet | — |
-| `gpt-5.2` | GPT-5.2 | — |
-| `gpt-5.3-codex` | GPT-5.3 Codex | — |
-| `gemini-3-pro` | Gemini 3 Pro | — |
-| `gemini-3-flash` | Gemini 3 Flash | — |
-| `grok` | Grok | — |
-| `composer-1.5` | Composer 1.5 | — |
-| *(see `index.ts` for the full static list)* | | |
+### Model reference table
+
+Subset of models supported by the provider. Use the **Canonical ID** with `/model cursor/<id>`. The full list is discoverable via `agent models`.
+
+| Canonical ID | CLI model ID | Name | Reasoning |
+|---|---|---|---|
+| `auto` | `auto` | Auto | — |
+| `claude-sonnet-4-5` | `sonnet-4.5`, `sonnet-4.5-thinking` | Claude 4.5 Sonnet | yes (thinking variant) |
+| `claude-sonnet-4-6` | `sonnet-4.6`, `sonnet-4.6-thinking` | Claude 4.6 Sonnet | yes (thinking variant) |
+| `claude-opus-4-5` | `opus-4.5`, `opus-4.5-thinking` | Claude 4.5 Opus | yes (thinking variant) |
+| `claude-opus-4-6` | `opus-4.6`, `opus-4.6-thinking` | Claude 4.6 Opus | yes (thinking variant) |
+| `gpt-5.2` | `gpt-5.2`, `gpt-5.2-high` | GPT-5.2 | yes (high variant) |
+| `gpt-5.2-codex` | `gpt-5.2-codex`, `-low`, `-high`, `-xhigh` | GPT-5.2 Codex | yes (level variants) |
+| `gpt-5.2-codex-fast` | `gpt-5.2-codex-fast`, `-low-fast`, … | GPT-5.2 Codex Fast | yes (level variants) |
+| `gpt-5.3-codex` | `gpt-5.3-codex`, `-low`, `-high`, `-xhigh` | GPT-5.3 Codex | yes (level variants) |
+| `gpt-5.3-codex-fast` | `gpt-5.3-codex-fast`, … | GPT-5.3 Codex Fast | yes (level variants) |
+| `gpt-5.1` | `gpt-5.1-high` | GPT-5.1 High | yes |
+| `gpt-5.1-codex-max` | `gpt-5.1-codex-max`, `-max-high` | GPT-5.1 Codex Max | yes |
+| `gemini-3-pro-preview` | `gemini-3-pro` | Gemini 3 Pro | — |
+| `gemini-3-flash-preview` | `gemini-3-flash` | Gemini 3 Flash | — |
+| `grok-code-fast-1` | `grok` | Grok | — |
+| `composer-1.5` | `composer-1.5` | Composer 1.5 | — |
+| `composer-1` | `composer-1` | Composer 1 | — |
 
 ---
 

@@ -100,6 +100,135 @@ const STATIC_MODELS_MAP = new Map<string, CursorModelDef>(
 );
 
 // ---------------------------------------------------------------------------
+// Canonical model ID mapping
+// Maps canonical IDs (e.g. claude-sonnet-4-5) to CLI model IDs. When Pi
+// provides a reasoning/thinking level, the corresponding variant is used.
+// ---------------------------------------------------------------------------
+
+type ReasoningLevel = "minimal" | "low" | "medium" | "high" | "xhigh";
+
+interface ModelVariants {
+  default: string;
+  minimal?: string;
+  low?: string;
+  medium?: string;
+  high?: string;
+  xhigh?: string;
+}
+
+const MODEL_MAP: Record<string, ModelVariants> = {
+  "claude-sonnet-4-5": {
+    default: "sonnet-4.5",
+    minimal: "sonnet-4.5-thinking",
+    low: "sonnet-4.5-thinking",
+    medium: "sonnet-4.5-thinking",
+    high: "sonnet-4.5-thinking",
+    xhigh: "sonnet-4.5-thinking",
+  },
+  "claude-sonnet-4-6": {
+    default: "sonnet-4.6",
+    minimal: "sonnet-4.6-thinking",
+    low: "sonnet-4.6-thinking",
+    medium: "sonnet-4.6-thinking",
+    high: "sonnet-4.6-thinking",
+    xhigh: "sonnet-4.6-thinking",
+  },
+  "claude-opus-4-5": {
+    default: "opus-4.5",
+    minimal: "opus-4.5-thinking",
+    low: "opus-4.5-thinking",
+    medium: "opus-4.5-thinking",
+    high: "opus-4.5-thinking",
+    xhigh: "opus-4.5-thinking",
+  },
+  "claude-opus-4-6": {
+    default: "opus-4.6",
+    minimal: "opus-4.6-thinking",
+    low: "opus-4.6-thinking",
+    medium: "opus-4.6-thinking",
+    high: "opus-4.6-thinking",
+    xhigh: "opus-4.6-thinking",
+  },
+  "gpt-5.2": {
+    default: "gpt-5.2",
+    high: "gpt-5.2-high",
+    xhigh: "gpt-5.2-high",
+  },
+  "gpt-5.2-codex": {
+    default: "gpt-5.2-codex",
+    minimal: "gpt-5.2-codex-low",
+    low: "gpt-5.2-codex-low",
+    high: "gpt-5.2-codex-high",
+    xhigh: "gpt-5.2-codex-xhigh",
+  },
+  "gpt-5.2-codex-fast": {
+    default: "gpt-5.2-codex-fast",
+    minimal: "gpt-5.2-codex-low-fast",
+    low: "gpt-5.2-codex-low-fast",
+    high: "gpt-5.2-codex-high-fast",
+    xhigh: "gpt-5.2-codex-xhigh-fast",
+  },
+  "gpt-5.3-codex": {
+    default: "gpt-5.3-codex",
+    minimal: "gpt-5.3-codex-low",
+    low: "gpt-5.3-codex-low",
+    high: "gpt-5.3-codex-high",
+    xhigh: "gpt-5.3-codex-xhigh",
+  },
+  "gpt-5.3-codex-fast": {
+    default: "gpt-5.3-codex-fast",
+    minimal: "gpt-5.3-codex-low-fast",
+    low: "gpt-5.3-codex-low-fast",
+    high: "gpt-5.3-codex-high-fast",
+    xhigh: "gpt-5.3-codex-xhigh-fast",
+  },
+  "gpt-5.1": {
+    default: "gpt-5.1-high",
+  },
+  "gpt-5.1-codex-max": {
+    default: "gpt-5.1-codex-max",
+    high: "gpt-5.1-codex-max-high",
+    xhigh: "gpt-5.1-codex-max-high",
+  },
+  "gemini-3-pro-preview": { default: "gemini-3-pro" },
+  "gemini-3-flash-preview": { default: "gemini-3-flash" },
+  "grok-code-fast-1": { default: "grok" },
+};
+
+const cursorDefaultToCanonical = new Map<string, string>();
+const allMappedCursorIds = new Set<string>();
+for (const [canonicalId, variants] of Object.entries(MODEL_MAP)) {
+  if (variants.default) cursorDefaultToCanonical.set(variants.default, canonicalId);
+  for (const cursorId of Object.values(variants)) {
+    if (cursorId) allMappedCursorIds.add(cursorId);
+  }
+}
+
+/**
+ * Convert a Cursor CLI model ID to its canonical ID.
+ * Returns null for variant-only IDs (e.g. thinking); they are not shown as separate models.
+ * Returns the id as-is for unmapped models.
+ */
+function toCanonicalId(cursorId: string): string | null {
+  const canonical = cursorDefaultToCanonical.get(cursorId);
+  if (canonical) return canonical;
+  if (allMappedCursorIds.has(cursorId)) return null;
+  return cursorId;
+}
+
+/**
+ * Resolve a canonical model ID (and optional reasoning level) to the Cursor CLI model ID.
+ * Returns the id as-is for unmapped models.
+ */
+function toCursorId(canonicalId: string, reasoning?: string): string {
+  const family = MODEL_MAP[canonicalId];
+  if (!family) return canonicalId;
+  const level = reasoning as ReasoningLevel | undefined;
+  const variant = level && family[level];
+  return variant ?? family.default ?? canonicalId;
+}
+
+// ---------------------------------------------------------------------------
 // Dynamic model discovery via `agent models`
 // ---------------------------------------------------------------------------
 
@@ -345,7 +474,10 @@ function streamCursorCli(
   const stream = createAssistantMessageEventStream();
 
   (async () => {
-    const output: AssistantMessage = {
+    const startTime = Date.now();
+    let firstTokenTime: number | undefined;
+
+    const output: AssistantMessage & { duration?: number; ttft?: number } = {
       role: "assistant",
       content: [],
       api: model.api,
@@ -363,6 +495,11 @@ function streamCursorCli(
       timestamp: Date.now(),
     };
 
+    const setTiming = () => {
+      output.duration = Date.now() - startTime;
+      output.ttft = firstTokenTime != null ? firstTokenTime - startTime : undefined;
+    };
+
     try {
       const agentPath =
         process.env["CURSOR_AGENT_PATH"] ??
@@ -371,11 +508,13 @@ function streamCursorCli(
 
       const workspacePath = process.cwd();
       const prompt = serializeContext(context);
+      const reasoningLevel = (options as { reasoning?: string })?.reasoning;
+      const cliModelId = toCursorId(model.id, reasoningLevel);
 
       const args = [
         "--print",
         "--output-format", "stream-json",
-        "--model", model.id,
+        "--model", cliModelId,
         "--trust",
         "--workspace", workspacePath,
         prompt,
@@ -417,6 +556,7 @@ function streamCursorCli(
             if (block.type !== "text") continue;
             if (!block.text.trim()) continue;
 
+            if (firstTokenTime === undefined) firstTokenTime = Date.now();
             if (!textBlockOpen) {
               output.content.push({ type: "text", text: "" });
               const idx = output.content.length - 1;
@@ -474,6 +614,7 @@ function streamCursorCli(
 
           if (options?.signal?.aborted) {
             output.stopReason = "aborted";
+            setTiming();
             stream.push({ type: "error", reason: "aborted", error: output });
             stream.end();
             resolve();
@@ -484,12 +625,14 @@ function streamCursorCli(
             const stderr = stderrChunks.join("").trim();
             output.stopReason = "error";
             output.errorMessage = stderr || `Cursor CLI exited with code ${code}`;
+            setTiming();
             stream.push({ type: "error", reason: "error", error: output });
             stream.end();
             resolve();
             return;
           }
 
+          setTiming();
           stream.push({ type: "done", reason: "stop", message: output });
           stream.end();
           resolve();
@@ -499,6 +642,7 @@ function streamCursorCli(
           options?.signal?.removeEventListener("abort", onAbort);
           output.stopReason = "error";
           output.errorMessage = err.message;
+          setTiming();
           stream.push({ type: "error", reason: "error", error: output });
           stream.end();
           resolve();
@@ -507,6 +651,7 @@ function streamCursorCli(
     } catch (error) {
       output.stopReason = options?.signal?.aborted ? "aborted" : "error";
       output.errorMessage = error instanceof Error ? error.message : String(error);
+      setTiming();
       stream.push({ type: "error", reason: output.stopReason, error: output });
       stream.end();
     }
@@ -567,17 +712,28 @@ function runAgentStatus(agentPath: string): Promise<string> {
 
 /**
  * Build a ProviderModelConfig array from a list of CursorModelDef entries.
+ * Uses canonical IDs where a mapping exists and omits variant-only entries.
  */
 function toProviderModels(defs: CursorModelDef[]) {
-  return defs.map((m) => ({
-    id: m.id,
-    name: `${m.name} (Cursor)`,
-    reasoning: m.reasoning,
-    input: ["text"] as ("text" | "image")[],
-    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-    contextWindow: m.contextWindow,
-    maxTokens: m.maxTokens,
-  }));
+  const seen = new Set<string>();
+  return defs.flatMap((m) => {
+    const canonicalId = toCanonicalId(m.id);
+    if (canonicalId === null) return []; // variant-only; hide
+    const id = canonicalId !== m.id ? canonicalId : m.id;
+    if (seen.has(id)) return [];
+    seen.add(id);
+    return [
+      {
+        id,
+        name: `${m.name} (Cursor)`,
+        reasoning: m.reasoning,
+        input: ["text"] as ("text" | "image")[],
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+        contextWindow: m.contextWindow,
+        maxTokens: m.maxTokens,
+      },
+    ];
+  });
 }
 
 export default async function (pi: ExtensionAPI) {
