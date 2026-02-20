@@ -1,5 +1,5 @@
 <div align="center">
-  <img src="logo.png" alt="Pi Cursor Provider" width="200" />
+  <img src="logo.png" alt="Pi Cursor Provider" width="400" />
 </div>
 
 # pi-cursor-provider
