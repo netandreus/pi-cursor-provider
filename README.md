@@ -39,6 +39,7 @@ No separate API keys are needed for the models themselves. Authentication is han
   - [Configuration](#configuration)
   - [How it works](#how-it-works)
   - [Tool calls](#tool-calls)
+  - [Installing and enabling MCP tools in Cursor Agent for Pi](#installing-and-enabling-mcp-tools-in-cursor-agent-for-pi)
   - [Image input](#image-input)
   - [Limitations](#limitations)
   - [Troubleshooting](#troubleshooting)
@@ -265,6 +266,91 @@ Supported Cursor CLI tools that appear in Pi's output:
 | `todoToolCall` | Todo |
 | `webFetchToolCall` | WebFetch |
 | `webSearchToolCall` | WebSearch |
+
+---
+
+## Installing and enabling MCP tools in Cursor Agent for Pi
+
+To use Pi-related MCP tools (e.g. `pi-auto`) when the Cursor Agent runs on behalf of Pi, connect the MCP server, enable it for the agent, and allow its tools in the CLI config.
+
+### 1. Connect MCP server to agent
+
+Add the server to `~/.cursor/mcp.json`. Example for `pi-auto`:
+
+```bash
+cat ~/.cursor/mcp.json
+```
+
+```json
+{
+  "mcpServers": {
+    "pi-auto": {
+      "command": "pi-auto-mcp",
+      "lifecycle": "keep-alive",
+      "directTools": true
+    }
+  }
+}
+```
+
+### 2. Enable the MCP server
+
+List MCP servers; new ones need approval:
+
+```bash
+agent mcp list
+```
+
+Example output:
+```
+pi-auto: not loaded (needs approval)
+```
+
+Enable and approve the server:
+
+```bash
+agent mcp enable pi-auto
+```
+
+Example output:
+```
+✓ Enabled and approved MCP server: pi-auto
+```
+
+Verify tools are available:
+
+```bash
+agent mcp list-tools pi-auto
+```
+
+Example output:
+```
+Tools for pi-auto (8):
+- pi_get_priority ()
+- pi_get_provider (scope, projectPath)
+- pi_get_strategy ()
+- pi_get_usage (period)
+- pi_set_priority (priority)
+- pi_set_provider (provider, model, scope, projectPath)
+- pi_set_strategy (strategy)
+- pi_suggest_provider (period)
+```
+
+### 3. Allow tools from this MCP
+
+Ensure `~/.cursor/cli-config.json` allows the MCP tools. For example:
+
+```json
+"permissions": {
+  "allow": [
+    "Shell(ls)",
+    "Mcp(pi-auto:*)"
+  ],
+  "deny": []
+}
+```
+
+`Mcp(pi-auto:*)` lets the agent use any tool from the `pi-auto` server.
 
 ---
 
