@@ -52,6 +52,7 @@ const STATIC_MODELS: CursorModelDef[] = [
   // Auto
   { id: "auto", name: "Auto", reasoning: false, contextWindow: 200000, maxTokens: 32768 },
   // Composer
+  { id: "composer-2.5-fast", name: "Composer 2.5 Fast", reasoning: false, contextWindow: 200000, maxTokens: 32768 },
   { id: "composer-1.5", name: "Composer 1.5", reasoning: false, contextWindow: 200000, maxTokens: 32768 },
   { id: "composer-1", name: "Composer 1", reasoning: false, contextWindow: 200000, maxTokens: 32768 },
   // Claude Opus

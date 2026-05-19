@@ -207,6 +207,7 @@ Subset of models supported by the provider. Use the **Canonical ID** with `/mode
 | `gemini-3-pro-preview` | `gemini-3-pro` | Gemini 3 Pro | — |
 | `gemini-3-flash-preview` | `gemini-3-flash` | Gemini 3 Flash | — |
 | `grok-code-fast-1` | `grok` | Grok | — |
+| `composer-2.5-fast` | `composer-2.5-fast` | Composer 2.5 Fast | — |
 | `composer-1.5` | `composer-1.5` | Composer 1.5 | — |
 | `composer-1` | `composer-1` | Composer 1 | — |
 
