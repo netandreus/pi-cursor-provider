@@ -173,11 +173,11 @@ echo "Explain the main function in this file" | \
 
 ## Available models
 
-At startup the extension registers models from a **disk cache** (`~/.pi/agent/cursor-models-cache.json`, or `CURSOR_MODELS_CACHE`) so Pi does not block on `agent models` (which commonly takes ~2–3s). If the cache is missing or older than 24h, discovery runs in the **background** and updates the cache for the next session.
+At startup the extension registers models from a **disk cache** (`~/.pi/agent/cursor-models-cache.json`, or `CURSOR_MODELS_CACHE`) so Pi does not block on `agent models` (which commonly takes ~2–3s). If the cache is missing or older than 24h, discovery runs after `session_start` in the background, then hot-updates the registered provider models.
 
 If no cache exists yet, a built-in static fallback list is used immediately. If background discovery fails (CLI missing, not authenticated, timeout), the current list is kept — no crash, no user action needed.
 
-Force a refresh anytime with `/cursor-models-refresh` (restart Pi afterward to load newly discovered models into the current session).
+Force a refresh anytime with `/cursor-models-refresh` (applies immediately; no restart required).
 
 To see the models currently available to your account:
 
@@ -389,8 +389,8 @@ Image input will be enabled automatically if a future Cursor CLI version adds an
 | `spawn agent ENOENT` | `agent` binary not on PATH | Set `CURSOR_AGENT_PATH=/path/to/agent` |
 | Empty response / hangs | Not logged in to Cursor | Run `agent login` or set `CURSOR_API_KEY` |
 | `No models available` | Cursor CLI cannot reach the API | Check internet connection and `agent status` |
-| Error on a specific model | Model not in your subscription | Run `agent models` or `/cursor-models-refresh`, then restart Pi |
-| Missing newly released models | Cache still serving previous catalog | Run `/cursor-models-refresh` and restart Pi |
+| Error on a specific model | Model not in your subscription | Run `agent models` or `/cursor-models-refresh` |
+| Missing newly released models | Cache still serving previous catalog | Run `/cursor-models-refresh` |
 | NDJSON parse errors | Unexpected CLI output | Check stderr; update Cursor Agent CLI |
 
 ---

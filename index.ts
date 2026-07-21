@@ -18,8 +18,9 @@
  */
 
 import { spawn } from "node:child_process";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname } from "node:path";
+import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { dirname, join } from "node:path";
 import { createInterface } from "node:readline";
 import type {
   Api,
@@ -748,13 +749,13 @@ function toProviderModels(defs: CursorModelDef[]) {
  * Cursor's `agent models` commonly takes ~2–3s. Awaiting it inside the
  * extension factory blocks Pi startup for every session. Instead we register
  * immediately from a disk cache (falling back to STATIC_MODELS) and refresh
- * the catalog in the background when the cache is stale.
+ * the catalog from `session_start` when the cache is stale.
  *
  * Override path with CURSOR_MODELS_CACHE. Default TTL is 24h.
  */
 const CACHE_PATH =
   process.env["CURSOR_MODELS_CACHE"] ??
-  `${process.env["HOME"]}/.pi/agent/cursor-models-cache.json`;
+  join(homedir(), ".pi", "agent", "cursor-models-cache.json");
 const CACHE_TTL_MS = 24 * 60 * 60 * 1000;
 
 interface ModelsCache {
@@ -775,10 +776,12 @@ function loadModelsCache(): CursorModelDef[] | null {
 function saveModelsCache(models: CursorModelDef[]): void {
   try {
     mkdirSync(dirname(CACHE_PATH), { recursive: true });
+    const tmpPath = `${CACHE_PATH}.${process.pid}.tmp`;
     writeFileSync(
-      CACHE_PATH,
+      tmpPath,
       JSON.stringify({ at: Date.now(), models } satisfies ModelsCache),
     );
+    renameSync(tmpPath, CACHE_PATH);
   } catch {
     // cache write is best-effort
   }
@@ -793,7 +796,7 @@ function cacheIsFresh(): boolean {
   }
 }
 
-/** Refresh cache from `agent models`. Do not await this at startup. */
+/** Refresh cache from `agent models`. Safe to call without awaiting at session start. */
 async function refreshModelsCache(agentPath: string): Promise<CursorModelDef[] | null> {
   try {
     const defs = await runAgentModels(agentPath);
@@ -804,25 +807,34 @@ async function refreshModelsCache(agentPath: string): Promise<CursorModelDef[] |
   }
 }
 
-export default async function (pi: ExtensionAPI) {
-  const agentPath =
-    process.env["CURSOR_AGENT_PATH"] ??
-    process.env["AGENT_PATH"] ??
-    "agent";
-
-  // Non-blocking startup: register from cache (or static list) immediately,
-  // then refresh the catalog in the background for the next session.
-  const modelDefs: CursorModelDef[] = loadModelsCache() ?? STATIC_MODELS;
-  if (!cacheIsFresh()) {
-    void refreshModelsCache(agentPath);
-  }
-
+function registerCursorProvider(pi: ExtensionAPI, modelDefs: CursorModelDef[]): void {
   pi.registerProvider("cursor", {
     baseUrl: "cli://cursor-agent",
     apiKey: "CURSOR_API_KEY",
     api: "cursor-cli" as Api,
     models: toProviderModels(modelDefs),
     streamSimple: streamCursorCli,
+  });
+}
+
+export default function (pi: ExtensionAPI) {
+  const agentPath =
+    process.env["CURSOR_AGENT_PATH"] ??
+    process.env["AGENT_PATH"] ??
+    "agent";
+
+  // Non-blocking startup: register from cache (or static list) immediately.
+  // Background discovery is deferred to session_start so factory-only
+  // invocations (e.g. --list-models) do not spawn `agent models`.
+  registerCursorProvider(pi, loadModelsCache() ?? STATIC_MODELS);
+
+  pi.on("session_start", () => {
+    if (!cacheIsFresh()) {
+      void (async () => {
+        const defs = await refreshModelsCache(agentPath);
+        if (defs) registerCursorProvider(pi, defs);
+      })();
+    }
   });
 
   // ---------------------------------------------------------------------------
@@ -833,12 +845,18 @@ export default async function (pi: ExtensionAPI) {
     description: "Refresh cached Cursor model catalog (run `agent models`)",
     handler: async (_args, ctx) => {
       const defs = await refreshModelsCache(agentPath);
-      ctx.ui.notify(
-        defs
-          ? `Cursor model catalog refreshed (${defs.length} models). Reload or restart pi to pick up new models.`
-          : "Failed to refresh Cursor model catalog (agent models error); keeping cached list.",
-        defs ? "info" : "error",
-      );
+      if (defs) {
+        registerCursorProvider(pi, defs);
+        ctx.ui.notify(
+          `Cursor model catalog refreshed (${defs.length} models).`,
+          "info",
+        );
+      } else {
+        ctx.ui.notify(
+          "Failed to refresh Cursor model catalog (agent models error); keeping cached list.",
+          "error",
+        );
+      }
     },
   });
 
