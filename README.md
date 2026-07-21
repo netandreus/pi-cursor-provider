@@ -128,6 +128,7 @@ After loading the extension you can manage auth without leaving Pi. These comman
 | `/cursor-login` | Log in to Cursor (runs `agent login`) |
 | `/cursor-status` | Show Cursor authentication status (runs `agent status`) |
 | `/cursor-logout` | Log out of Cursor (runs `agent logout`) |
+| `/cursor-models-refresh` | Refresh the cached Cursor model catalog (runs `agent models`) |
 
 ### Verify auth
 
@@ -172,9 +173,11 @@ echo "Explain the main function in this file" | \
 
 ## Available models
 
-At startup the extension runs `agent models` to discover the **account-specific** model list from your Cursor subscription. The list is cached for the lifetime of the Pi session.
+At startup the extension registers models from a **disk cache** (`~/.pi/agent/cursor-models-cache.json`, or `CURSOR_MODELS_CACHE`) so Pi does not block on `agent models` (which commonly takes ~2–3s). If the cache is missing or older than 24h, discovery runs in the **background** and updates the cache for the next session.
 
-If discovery fails (e.g. the CLI is not installed, not authenticated, or times out), a built-in static fallback list is used automatically — no crash, no user action needed.
+If no cache exists yet, a built-in static fallback list is used immediately. If background discovery fails (CLI missing, not authenticated, timeout), the current list is kept — no crash, no user action needed.
+
+Force a refresh anytime with `/cursor-models-refresh` (restart Pi afterward to load newly discovered models into the current session).
 
 To see the models currently available to your account:
 
@@ -219,6 +222,7 @@ Subset of models supported by the provider. Use the **Canonical ID** with `/mode
 | `CURSOR_AGENT_PATH` | `agent` | Full path to the Cursor Agent CLI binary. |
 | `AGENT_PATH` | `agent` | Fallback if `CURSOR_AGENT_PATH` is not set. |
 | `CURSOR_API_KEY` | *(none)* | Cursor API key; passed to CLI via `--api-key` if set. |
+| `CURSOR_MODELS_CACHE` | `~/.pi/agent/cursor-models-cache.json` | Path to the on-disk model catalog cache used for non-blocking startup. |
 
 Example:
 
@@ -385,7 +389,8 @@ Image input will be enabled automatically if a future Cursor CLI version adds an
 | `spawn agent ENOENT` | `agent` binary not on PATH | Set `CURSOR_AGENT_PATH=/path/to/agent` |
 | Empty response / hangs | Not logged in to Cursor | Run `agent login` or set `CURSOR_API_KEY` |
 | `No models available` | Cursor CLI cannot reach the API | Check internet connection and `agent status` |
-| Error on a specific model | Model not in your subscription | Run `agent models` to see available models |
+| Error on a specific model | Model not in your subscription | Run `agent models` or `/cursor-models-refresh`, then restart Pi |
+| Missing newly released models | Cache still serving previous catalog | Run `/cursor-models-refresh` and restart Pi |
 | NDJSON parse errors | Unexpected CLI output | Check stderr; update Cursor Agent CLI |
 
 ---

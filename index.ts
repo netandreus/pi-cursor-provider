@@ -14,9 +14,12 @@
  * Configuration env vars:
  *   CURSOR_AGENT_PATH   Path to the Cursor Agent CLI binary (default: "agent")
  *   CURSOR_API_KEY      API key for Cursor (used by the agent subprocess if set)
+ *   CURSOR_MODELS_CACHE Path to cached model catalog JSON (default: ~/.pi/agent/cursor-models-cache.json)
  */
 
 import { spawn } from "node:child_process";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname } from "node:path";
 import { createInterface } from "node:readline";
 import type {
   Api,
@@ -736,18 +739,82 @@ function toProviderModels(defs: CursorModelDef[]) {
   });
 }
 
+
+// ---------------------------------------------------------------------------
+// Model catalog cache (non-blocking startup)
+// ---------------------------------------------------------------------------
+
+/**
+ * Cursor's `agent models` commonly takes ~2–3s. Awaiting it inside the
+ * extension factory blocks Pi startup for every session. Instead we register
+ * immediately from a disk cache (falling back to STATIC_MODELS) and refresh
+ * the catalog in the background when the cache is stale.
+ *
+ * Override path with CURSOR_MODELS_CACHE. Default TTL is 24h.
+ */
+const CACHE_PATH =
+  process.env["CURSOR_MODELS_CACHE"] ??
+  `${process.env["HOME"]}/.pi/agent/cursor-models-cache.json`;
+const CACHE_TTL_MS = 24 * 60 * 60 * 1000;
+
+interface ModelsCache {
+  at: number;
+  models: CursorModelDef[];
+}
+
+function loadModelsCache(): CursorModelDef[] | null {
+  try {
+    const parsed = JSON.parse(readFileSync(CACHE_PATH, "utf-8")) as ModelsCache;
+    if (Array.isArray(parsed?.models) && parsed.models.length > 0) return parsed.models;
+  } catch {
+    // no cache yet
+  }
+  return null;
+}
+
+function saveModelsCache(models: CursorModelDef[]): void {
+  try {
+    mkdirSync(dirname(CACHE_PATH), { recursive: true });
+    writeFileSync(
+      CACHE_PATH,
+      JSON.stringify({ at: Date.now(), models } satisfies ModelsCache),
+    );
+  } catch {
+    // cache write is best-effort
+  }
+}
+
+function cacheIsFresh(): boolean {
+  try {
+    const parsed = JSON.parse(readFileSync(CACHE_PATH, "utf-8")) as ModelsCache;
+    return typeof parsed?.at === "number" && Date.now() - parsed.at < CACHE_TTL_MS;
+  } catch {
+    return false;
+  }
+}
+
+/** Refresh cache from `agent models`. Do not await this at startup. */
+async function refreshModelsCache(agentPath: string): Promise<CursorModelDef[] | null> {
+  try {
+    const defs = await runAgentModels(agentPath);
+    saveModelsCache(defs);
+    return defs;
+  } catch {
+    return null;
+  }
+}
+
 export default async function (pi: ExtensionAPI) {
   const agentPath =
     process.env["CURSOR_AGENT_PATH"] ??
     process.env["AGENT_PATH"] ??
     "agent";
 
-  // Attempt dynamic model discovery; fall back to static list on any failure.
-  let modelDefs: CursorModelDef[];
-  try {
-    modelDefs = await runAgentModels(agentPath);
-  } catch {
-    modelDefs = STATIC_MODELS;
+  // Non-blocking startup: register from cache (or static list) immediately,
+  // then refresh the catalog in the background for the next session.
+  const modelDefs: CursorModelDef[] = loadModelsCache() ?? STATIC_MODELS;
+  if (!cacheIsFresh()) {
+    void refreshModelsCache(agentPath);
   }
 
   pi.registerProvider("cursor", {
@@ -761,6 +828,19 @@ export default async function (pi: ExtensionAPI) {
   // ---------------------------------------------------------------------------
   // Slash commands for Cursor auth management
   // ---------------------------------------------------------------------------
+
+  pi.registerCommand("cursor-models-refresh", {
+    description: "Refresh cached Cursor model catalog (run `agent models`)",
+    handler: async (_args, ctx) => {
+      const defs = await refreshModelsCache(agentPath);
+      ctx.ui.notify(
+        defs
+          ? `Cursor model catalog refreshed (${defs.length} models). Reload or restart pi to pick up new models.`
+          : "Failed to refresh Cursor model catalog (agent models error); keeping cached list.",
+        defs ? "info" : "error",
+      );
+    },
+  });
 
   pi.registerCommand("cursor-login", {
     description: "Log in to Cursor (runs `agent login`)",
