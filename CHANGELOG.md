@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **Thinking trail**: Forward Cursor CLI `thinking` stream-json events as Pi `thinking_start` / `thinking_delta` / `thinking_end` (previously dropped). Mark `auto` as a reasoning model.
+- **Native tool UI**: Map common Cursor tools to Pi built-in tool cards instead of embedding `⏳ […]` markers in assistant text.
+- **Turn order**: Buffer post-tool thinking/answer and emit them after tool results so the TUI order is thinking → tools → answer (Pi renders tool cards after the assistant bubble).
+
 ## [0.1.2]
 
 ### Added

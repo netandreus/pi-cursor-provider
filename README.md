@@ -251,25 +251,27 @@ The extension serialises the Pi conversation (system prompt + message history) i
 
 ## Tool calls
 
-When the Cursor CLI uses tools (Read, Write, Shell, Grep, Ls, Glob, etc.) during a turn, the extension displays those calls inline with the assistant text.
+The **Cursor CLI executes all tools** itself. This provider maps those events into Pi's native tool UI (and thinking trail) so turns feel like a built-in Pi model.
 
-The **Cursor CLI executes all tools** itself — Pi only observes and displays them. Tool arguments and results originate in the Cursor agent's execution environment, not in Pi's tool system.
+How streaming is shaped for Pi's TUI:
 
-Supported Cursor CLI tools that appear in Pi's output:
+1. Early thinking (and any preamble text) streams first.
+2. Mapped tool calls appear as native Pi tool cards (`bash`, `read`, `write`, `edit`, `grep`, `find`, `ls`).
+3. Post-tool thinking and the final answer are held and emitted on a follow-up assistant message after tool results — Pi always renders tool cards after the assistant bubble, so packing tools + answer into one message looked backwards.
+4. Built-in tools are wrapped so Cursor-owned call IDs return the CLI result instead of re-running the tool. Unmapped tools (todo, web fetch/search, …) still show as short text markers.
 
-| CLI event key | Display name |
+Cursor CLI thinking deltas (`type: "thinking"`) are forwarded as Pi `thinking_*` events. `auto` is marked `reasoning: true` so the trail is shown.
+
+| CLI event key | Pi tool / display |
 |---|---|
-| `shellToolCall` | Shell |
-| `readToolCall` | Read |
-| `editToolCall` | Edit |
-| `writeToolCall` | Write |
-| `deleteToolCall` | Delete |
-| `grepToolCall` | Grep |
-| `globToolCall` | Glob |
-| `lsToolCall` | Ls |
-| `todoToolCall` | Todo |
-| `webFetchToolCall` | WebFetch |
-| `webSearchToolCall` | WebSearch |
+| `shellToolCall` | `bash` |
+| `readToolCall` | `read` |
+| `editToolCall` | `edit` |
+| `writeToolCall` | `write` |
+| `grepToolCall` | `grep` |
+| `globToolCall` / `findToolCall` | `find` |
+| `lsToolCall` | `ls` |
+| `deleteToolCall`, `todoToolCall`, `webFetchToolCall`, `webSearchToolCall`, … | text marker |
 
 ---
 
