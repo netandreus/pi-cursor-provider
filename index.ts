@@ -30,9 +30,45 @@ import type {
   Model,
   SimpleStreamOptions,
   TextContent,
+  ThinkingContent,
+  ToolCall,
 } from "@mariozechner/pi-ai";
 import { createAssistantMessageEventStream } from "@mariozechner/pi-ai";
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import {
+  createBashToolDefinition,
+  createEditToolDefinition,
+  createFindToolDefinition,
+  createGrepToolDefinition,
+  createLsToolDefinition,
+  createReadToolDefinition,
+  createWriteToolDefinition,
+} from "@mariozechner/pi-coding-agent";
+
+/** Results from Cursor CLI tool runs, keyed by Pi toolCall id — used to block re-execution. */
+type CursorPendingResult = {
+  content: Array<{ type: "text"; text: string }>;
+  isError: boolean;
+};
+const cursorOwnedToolCalls = new Set<string>();
+const cursorPendingResults = new Map<string, CursorPendingResult>();
+
+/**
+ * Pi's TUI always renders ToolExecutionComponents *after* the assistant bubble.
+ * Cursor packs tools + final answer into one stream, so a single message looks
+ * backwards (answer first, tools last). We hold post-tool thinking/text and emit
+ * it on the next streamSimple turn after tool passthrough.
+ */
+type CursorFollowUp = { thinking: string; text: string };
+let pendingCursorFollowUp: CursorFollowUp | null = null;
+/** When true, Cursor-owned tool executes must not terminate the agent loop. */
+let cursorExpectFollowUp = false;
+
+function isToolFollowUpTurn(context: Context): boolean {
+  const msgs = context.messages;
+  if (msgs.length === 0) return false;
+  return msgs[msgs.length - 1]!.role === "toolResult";
+}
 
 // ---------------------------------------------------------------------------
 // Model definitions
@@ -53,8 +89,8 @@ interface CursorModelDef {
  * Source: `agent models` output (Cursor Agent CLI v2026.02.13-41ac335).
  */
 const STATIC_MODELS: CursorModelDef[] = [
-  // Auto
-  { id: "auto", name: "Auto", reasoning: false, contextWindow: 200000, maxTokens: 32768 },
+  // Auto — CLI may emit thinking deltas even on Auto; mark reasoning so Pi shows the trail
+  { id: "auto", name: "Auto", reasoning: true, contextWindow: 200000, maxTokens: 32768 },
   // Composer
   { id: "composer-1.5", name: "Composer 1.5", reasoning: false, contextWindow: 200000, maxTokens: 32768 },
   { id: "composer-1", name: "Composer 1", reasoning: false, contextWindow: 200000, maxTokens: 32768 },
@@ -370,12 +406,15 @@ function serializeContext(context: Context): string {
           : msg.content.map(contentBlockToText).join("\n");
       lines.push(`[User]\n${text}`);
     } else if (msg.role === "assistant") {
-      const text = msg.content
-        .filter((c): c is TextContent => c.type === "text")
-        .map((c) => c.text)
-        .join("\n");
-      if (text.trim()) {
-        lines.push(`[Assistant]\n${text}`);
+      const parts: string[] = [];
+      for (const c of msg.content) {
+        if (c.type === "text" && c.text.trim()) parts.push(c.text);
+        else if (c.type === "toolCall") {
+          parts.push(`[Tool call: ${c.name}] ${JSON.stringify(c.arguments)}`);
+        }
+      }
+      if (parts.length > 0) {
+        lines.push(`[Assistant]\n${parts.join("\n")}`);
       }
     } else if (msg.role === "toolResult") {
       const text = msg.content.map(contentBlockToText).join("\n");
@@ -399,6 +438,17 @@ interface CursorAssistantEvent {
 }
 
 /**
+ * Cursor CLI thinking trail (stream-json).
+ * Deltas carry `text`; `completed` closes the block (no text).
+ */
+interface CursorThinkingEvent {
+  type: "thinking";
+  subtype: "delta" | "completed";
+  text?: string;
+  session_id: string;
+}
+
+/**
  * A single Cursor CLI tool call (the value keyed by tool name).
  * The key is the tool name in camelCase (e.g. "shellToolCall", "readToolCall").
  * args are present on both started and completed; result only on completed.
@@ -415,8 +465,9 @@ interface CursorToolCallPayload {
 interface CursorToolCallEvent {
   type: "tool_call";
   subtype: "started" | "completed";
-  /** The outer object has exactly one key: the tool name (e.g. "shellToolCall"). */
-  tool_call: Record<string, CursorToolCallPayload>;
+  call_id?: string;
+  /** Payload keyed by tool name (e.g. "shellToolCall"); may include extra metadata keys. */
+  tool_call: Record<string, CursorToolCallPayload | unknown>;
 }
 
 interface CursorResultEvent {
@@ -427,6 +478,7 @@ interface CursorResultEvent {
 
 type CursorStreamEvent =
   | CursorAssistantEvent
+  | CursorThinkingEvent
   | CursorToolCallEvent
   | CursorResultEvent
   | { type: string };
@@ -442,28 +494,315 @@ function parseLine(line: string): CursorStreamEvent | null {
 }
 
 // ---------------------------------------------------------------------------
-// Tool name mapping — CLI camelCase key → Pi display name
+// Tool mapping — Cursor CLI tools → Pi built-in tool names + sanitized args
+// so the TUI renders native ToolExecutionComponent cards. Pi must not re-run
+// them: see cursorOwnedToolCalls + tool_call block handlers below.
 // ---------------------------------------------------------------------------
 
-const TOOL_NAME_MAP: Record<string, string> = {
-  shellToolCall: "Shell",
-  readToolCall: "Read",
-  editToolCall: "Edit",
-  writeToolCall: "Write",
-  deleteToolCall: "Delete",
-  grepToolCall: "Grep",
-  globToolCall: "Glob",
-  lsToolCall: "Ls",
-  todoToolCall: "Todo",
-  updateTodosToolCall: "UpdateTodos",
-  findToolCall: "Find",
-  webFetchToolCall: "WebFetch",
-  webSearchToolCall: "WebSearch",
+type PiToolMapping = {
+  name: string;
+  args: (raw: Record<string, unknown>) => Record<string, unknown> | null;
 };
 
-/** Convert a CLI tool event key (e.g. "shellToolCall") to a Pi tool name. */
-function toPiToolName(cliKey: string): string {
-  return TOOL_NAME_MAP[cliKey] ?? cliKey.replace(/ToolCall$/, "");
+function str(v: unknown): string | undefined {
+  return typeof v === "string" && v.length > 0 ? v : undefined;
+}
+
+const PI_TOOL_MAP: Record<string, PiToolMapping> = {
+  shellToolCall: {
+    name: "bash",
+    args: (a) => {
+      const command = str(a.command);
+      return command ? { command } : null;
+    },
+  },
+  readToolCall: {
+    name: "read",
+    args: (a) => {
+      const path = str(a.path) ?? str(a.targetFile) ?? str(a.filePath) ?? str(a.absolutePath);
+      if (!path) return null;
+      const out: Record<string, unknown> = { path };
+      if (typeof a.offset === "number") out.offset = a.offset;
+      if (typeof a.limit === "number") out.limit = a.limit;
+      return out;
+    },
+  },
+  writeToolCall: {
+    name: "write",
+    args: (a) => {
+      const path = str(a.path) ?? str(a.filePath) ?? str(a.absolutePath);
+      const content = str(a.content) ?? str(a.contents) ?? str(a.newString) ?? str(a.new_string);
+      return path && content != null ? { path, content } : null;
+    },
+  },
+  editToolCall: {
+    name: "edit",
+    args: (a) => {
+      const path = str(a.path) ?? str(a.filePath) ?? str(a.absolutePath);
+      if (!path) return null;
+      if (Array.isArray(a.edits)) return { path, edits: a.edits };
+      const oldText = str(a.oldText) ?? str(a.old_string) ?? str(a.oldString);
+      const newText = str(a.newText) ?? str(a.new_string) ?? str(a.newString);
+      if (oldText == null || newText == null) return null;
+      return { path, edits: [{ oldText, newText }] };
+    },
+  },
+  grepToolCall: {
+    name: "grep",
+    args: (a) => {
+      const pattern = str(a.pattern) ?? str(a.query) ?? str(a.regex);
+      if (!pattern) return null;
+      const out: Record<string, unknown> = { pattern };
+      const path = str(a.path) ?? str(a.dir) ?? str(a.directory);
+      if (path) out.path = path;
+      if (str(a.glob)) out.glob = a.glob;
+      if (typeof a.caseInsensitive === "boolean") out.ignoreCase = a.caseInsensitive;
+      if (typeof a.ignoreCase === "boolean") out.ignoreCase = a.ignoreCase;
+      return out;
+    },
+  },
+  globToolCall: {
+    name: "find",
+    args: (a) => {
+      const pattern = str(a.globPattern) ?? str(a.pattern) ?? str(a.glob);
+      if (!pattern) return null;
+      const out: Record<string, unknown> = { pattern };
+      const path = str(a.path) ?? str(a.targetDirectory) ?? str(a.dir);
+      if (path) out.path = path;
+      return out;
+    },
+  },
+  findToolCall: {
+    name: "find",
+    args: (a) => {
+      const pattern = str(a.pattern) ?? str(a.globPattern) ?? str(a.glob);
+      if (!pattern) return null;
+      const out: Record<string, unknown> = { pattern };
+      const path = str(a.path) ?? str(a.targetDirectory) ?? str(a.dir);
+      if (path) out.path = path;
+      return out;
+    },
+  },
+  lsToolCall: {
+    name: "ls",
+    args: (a) => {
+      const out: Record<string, unknown> = {};
+      const path = str(a.path) ?? str(a.dir) ?? str(a.directory) ?? str(a.targetDirectory);
+      if (path) out.path = path;
+      if (typeof a.limit === "number") out.limit = a.limit;
+      return out;
+    },
+  },
+};
+
+const FALLBACK_TOOL_LABEL: Record<string, string> = {
+  shellToolCall: "bash",
+  readToolCall: "read",
+  editToolCall: "edit",
+  writeToolCall: "write",
+  deleteToolCall: "delete",
+  grepToolCall: "grep",
+  globToolCall: "find",
+  lsToolCall: "ls",
+  todoToolCall: "todo",
+  updateTodosToolCall: "todo",
+  findToolCall: "find",
+  webFetchToolCall: "web_fetch",
+  webSearchToolCall: "web_search",
+};
+
+function cliToolKey(toolCall: Record<string, unknown>): string | undefined {
+  return Object.keys(toolCall).find((k) => k in PI_TOOL_MAP || k in FALLBACK_TOOL_LABEL || k.endsWith("ToolCall"));
+}
+
+function normalizeToolCallId(raw: string | undefined, fallbackIndex: number): string {
+  const cleaned = (raw ?? `cursor-tool-${fallbackIndex}`).replace(/\s+/g, "-").slice(0, 80);
+  return cleaned.length > 0 ? cleaned : `cursor-tool-${fallbackIndex}`;
+}
+
+function formatCursorToolResult(
+  payload: CursorToolCallPayload,
+): CursorPendingResult {
+  const result = payload.result;
+  if (!result) {
+    return { content: [{ type: "text", text: "(no result)" }], isError: false };
+  }
+  if (result.rejected) {
+    return {
+      content: [{ type: "text", text: result.rejected.reason ?? "Rejected" }],
+      isError: true,
+    };
+  }
+  if (result.error) {
+    return {
+      content: [{ type: "text", text: result.error.message ?? "Error" }],
+      isError: true,
+    };
+  }
+  const success = result.success;
+  if (success && typeof success === "object") {
+    const s = success as Record<string, unknown>;
+    // Shell-like
+    if ("stdout" in s || "stderr" in s || "exitCode" in s || "interleavedOutput" in s) {
+      const exitCode = typeof s.exitCode === "number" ? s.exitCode : 0;
+      const out =
+        str(s.interleavedOutput) ??
+        [str(s.stdout) ?? "", str(s.stderr) ?? ""].filter(Boolean).join("\n");
+      const text = out || `(exit ${exitCode})`;
+      return { content: [{ type: "text", text }], isError: exitCode !== 0 };
+    }
+    // Read / generic content
+    if (typeof s.content === "string") {
+      return { content: [{ type: "text", text: s.content }], isError: false };
+    }
+    if (typeof s.contents === "string") {
+      return { content: [{ type: "text", text: s.contents }], isError: false };
+    }
+    if (Array.isArray(s.lines)) {
+      return { content: [{ type: "text", text: s.lines.map(String).join("\n") }], isError: false };
+    }
+  }
+  try {
+    return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }], isError: false };
+  } catch {
+    return { content: [{ type: "text", text: String(result) }], isError: false };
+  }
+}
+
+/**
+ * Override built-in tools so Cursor-owned call ids return the CLI result.
+ * terminate is false when a follow-up answer was buffered (so Pi requests it next).
+ */
+function registerCursorToolPassthroughs(pi: ExtensionAPI) {
+  const factories = [
+    createBashToolDefinition,
+    createReadToolDefinition,
+    createWriteToolDefinition,
+    createEditToolDefinition,
+    createGrepToolDefinition,
+    createFindToolDefinition,
+    createLsToolDefinition,
+  ] as const;
+
+  for (const create of factories) {
+    const probe = create(process.cwd());
+    pi.registerTool({
+      name: probe.name,
+      label: probe.label,
+      description: probe.description,
+      parameters: probe.parameters,
+      promptSnippet: probe.promptSnippet,
+      promptGuidelines: probe.promptGuidelines,
+      async execute(toolCallId, params, signal, onUpdate, ctx) {
+        if (cursorOwnedToolCalls.has(toolCallId)) {
+          const cached = cursorPendingResults.get(toolCallId) ?? {
+            content: [{ type: "text", text: "(Cursor CLI result missing)" }],
+            isError: true,
+          };
+          cursorOwnedToolCalls.delete(toolCallId);
+          cursorPendingResults.delete(toolCallId);
+          if (cached.isError) {
+            throw new Error(cached.content.map((c) => c.text).join("\n") || "Tool failed");
+          }
+          return {
+            content: cached.content,
+            details: {},
+            terminate: !cursorExpectFollowUp,
+          };
+        }
+        const tool = create(ctx.cwd);
+        // Factories are a union; each registration closes over one concrete tool.
+        return tool.execute(toolCallId, params as never, signal, onUpdate, ctx);
+      },
+    });
+  }
+}
+
+/** Emit a buffered post-tool answer without spawning Cursor again. */
+function streamCursorFollowUp(
+  model: Model<Api>,
+  follow: CursorFollowUp,
+  options?: SimpleStreamOptions,
+): AssistantMessageEventStream {
+  const stream = createAssistantMessageEventStream();
+
+  (async () => {
+    const startTime = Date.now();
+    const output: AssistantMessage & { duration?: number; ttft?: number } = {
+      role: "assistant",
+      content: [],
+      api: model.api,
+      provider: model.provider,
+      model: model.id,
+      usage: {
+        input: 0,
+        output: 0,
+        cacheRead: 0,
+        cacheWrite: 0,
+        totalTokens: 0,
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+      },
+      stopReason: "stop",
+      timestamp: Date.now(),
+    };
+
+    stream.push({ type: "start", partial: output });
+
+    if (options?.signal?.aborted) {
+      output.stopReason = "aborted";
+      output.duration = Date.now() - startTime;
+      stream.push({ type: "error", reason: "aborted", error: output });
+      stream.end();
+      return;
+    }
+
+    if (follow.thinking.trim()) {
+      output.content.push({ type: "thinking", thinking: "" });
+      const idx = output.content.length - 1;
+      stream.push({ type: "thinking_start", contentIndex: idx, partial: output });
+      const block = output.content[idx] as ThinkingContent;
+      block.thinking = follow.thinking;
+      stream.push({
+        type: "thinking_delta",
+        contentIndex: idx,
+        delta: follow.thinking,
+        partial: output,
+      });
+      stream.push({
+        type: "thinking_end",
+        contentIndex: idx,
+        content: follow.thinking,
+        partial: output,
+      });
+    }
+
+    if (follow.text.trim()) {
+      output.content.push({ type: "text", text: "" });
+      const idx = output.content.length - 1;
+      stream.push({ type: "text_start", contentIndex: idx, partial: output });
+      const block = output.content[idx] as TextContent;
+      block.text = follow.text;
+      stream.push({
+        type: "text_delta",
+        contentIndex: idx,
+        delta: follow.text,
+        partial: output,
+      });
+      stream.push({
+        type: "text_end",
+        contentIndex: idx,
+        content: follow.text,
+        partial: output,
+      });
+    }
+
+    output.duration = Date.now() - startTime;
+    output.ttft = 0;
+    stream.push({ type: "done", reason: "stop", message: output });
+    stream.end();
+  })();
+
+  return stream;
 }
 
 // ---------------------------------------------------------------------------
@@ -475,6 +814,17 @@ function streamCursorCli(
   context: Context,
   options?: SimpleStreamOptions,
 ): AssistantMessageEventStream {
+  // Second agent-loop turn: deliver buffered post-tool answer in order.
+  if (pendingCursorFollowUp && isToolFollowUpTurn(context)) {
+    const follow = pendingCursorFollowUp;
+    pendingCursorFollowUp = null;
+    cursorExpectFollowUp = false;
+    return streamCursorFollowUp(model, follow, options);
+  }
+  // Stale buffer from an aborted turn — do not leak into a new user prompt.
+  pendingCursorFollowUp = null;
+  cursorExpectFollowUp = false;
+
   const stream = createAssistantMessageEventStream();
 
   (async () => {
@@ -546,13 +896,107 @@ function streamCursorCli(
       });
 
       let textBlockOpen = false;
+      let thinkingBlockOpen = false;
       let accumulatedText = "";
+      let accumulatedThinking = "";
+      let toolSeq = 0;
+      /** Once Cursor starts tools, later thinking/text go to the follow-up message. */
+      let toolsStarted = false;
+      let bufferedFollowThinking = "";
+      let bufferedFollowText = "";
+      /** call_id → contentIndex for open native toolCall blocks */
+      const openToolCalls = new Map<string, number>();
+
+      const closeTextBlock = () => {
+        if (!textBlockOpen) return;
+        const idx = output.content.length - 1;
+        const block = output.content[idx] as TextContent;
+        stream.push({ type: "text_end", contentIndex: idx, content: block.text, partial: output });
+        textBlockOpen = false;
+      };
+
+      const closeThinkingBlock = () => {
+        if (!thinkingBlockOpen) return;
+        const idx = output.content.length - 1;
+        const block = output.content[idx] as ThinkingContent;
+        stream.push({
+          type: "thinking_end",
+          contentIndex: idx,
+          content: block.thinking,
+          partial: output,
+        });
+        thinkingBlockOpen = false;
+      };
+
+      const ensureTextBlock = () => {
+        if (textBlockOpen) return;
+        closeThinkingBlock();
+        output.content.push({ type: "text", text: "" });
+        const idx = output.content.length - 1;
+        stream.push({ type: "text_start", contentIndex: idx, partial: output });
+        textBlockOpen = true;
+      };
+
+      const ensureThinkingBlock = () => {
+        if (thinkingBlockOpen) return;
+        closeTextBlock();
+        output.content.push({ type: "thinking", thinking: "" });
+        const idx = output.content.length - 1;
+        stream.push({ type: "thinking_start", contentIndex: idx, partial: output });
+        thinkingBlockOpen = true;
+      };
+
+      const emitTextMarker = (marker: string) => {
+        if (toolsStarted) {
+          bufferedFollowText += marker;
+          accumulatedText += marker;
+          return;
+        }
+        ensureTextBlock();
+        const idx = output.content.length - 1;
+        const textBlock = output.content[idx] as TextContent;
+        textBlock.text += marker;
+        accumulatedText += marker;
+        stream.push({ type: "text_delta", contentIndex: idx, delta: marker, partial: output });
+      };
 
       const rl = createInterface({ input: child.stdout!, crlfDelay: Infinity });
 
       rl.on("line", (line: string) => {
         const event = parseLine(line);
         if (!event) return;
+
+        // Forward CLI thinking trail → Pi thinking_* events (was previously dropped).
+        if (event.type === "thinking") {
+          const te = event as CursorThinkingEvent;
+          if (te.subtype === "delta") {
+            const delta = te.text ?? "";
+            if (!delta) return;
+            if (firstTokenTime === undefined) firstTokenTime = Date.now();
+            if (toolsStarted) {
+              bufferedFollowThinking += delta;
+              accumulatedThinking += delta;
+              return;
+            }
+            ensureThinkingBlock();
+            const idx = output.content.length - 1;
+            const thinkingBlock = output.content[idx] as ThinkingContent;
+            thinkingBlock.thinking += delta;
+            accumulatedThinking += delta;
+            stream.push({
+              type: "thinking_delta",
+              contentIndex: idx,
+              delta,
+              partial: output,
+            });
+            return;
+          }
+          if (te.subtype === "completed") {
+            if (!toolsStarted) closeThinkingBlock();
+            return;
+          }
+          return;
+        }
 
         if (event.type === "assistant") {
           const ae = event as CursorAssistantEvent;
@@ -561,12 +1005,12 @@ function streamCursorCli(
             if (!block.text.trim()) continue;
 
             if (firstTokenTime === undefined) firstTokenTime = Date.now();
-            if (!textBlockOpen) {
-              output.content.push({ type: "text", text: "" });
-              const idx = output.content.length - 1;
-              stream.push({ type: "text_start", contentIndex: idx, partial: output });
-              textBlockOpen = true;
+            if (toolsStarted) {
+              bufferedFollowText += block.text;
+              accumulatedText += block.text;
+              continue;
             }
+            ensureTextBlock();
 
             const idx = output.content.length - 1;
             const textBlock = output.content[idx] as TextContent;
@@ -577,31 +1021,70 @@ function streamCursorCli(
           return;
         }
 
-        // Tool calls are rendered as informational text, not as Pi toolcall_*
-        // events, to prevent Pi's agentic loop from re-invoking streamSimple.
+        // Native Pi tool cards when we can map to a built-in tool; otherwise a short text marker.
+        // Cursor already executed the tool — passthrough execute returns the cached result.
         if (event.type === "tool_call") {
           const tce = event as CursorToolCallEvent;
-          const cliKey = Object.keys(tce.tool_call)[0];
+          const cliKey = cliToolKey(tce.tool_call as Record<string, unknown>);
           if (!cliKey) return;
-          const toolName = toPiToolName(cliKey);
+          const rawPayload = tce.tool_call[cliKey];
+          if (!rawPayload || typeof rawPayload !== "object") return;
+          const payload = rawPayload as CursorToolCallPayload;
+          const callId = normalizeToolCallId(
+            tce.call_id ?? str(payload.args?.toolCallId),
+            ++toolSeq,
+          );
 
           if (tce.subtype === "started") {
-            const payload = tce.tool_call[cliKey];
-            const argsSnippet = JSON.stringify(payload.args ?? {});
-            const brief = argsSnippet.length > 120 ? argsSnippet.slice(0, 120) + "…" : argsSnippet;
-            const marker = `\n⏳ [${toolName}] ${brief}\n`;
-
-            if (!textBlockOpen) {
-              output.content.push({ type: "text", text: "" });
-              const idx = output.content.length - 1;
-              stream.push({ type: "text_start", contentIndex: idx, partial: output });
-              textBlockOpen = true;
+            if (firstTokenTime === undefined) firstTokenTime = Date.now();
+            if (!toolsStarted) {
+              closeTextBlock();
+              closeThinkingBlock();
+              toolsStarted = true;
             }
-            const idx = output.content.length - 1;
-            const textBlock = output.content[idx] as TextContent;
-            textBlock.text += marker;
-            accumulatedText += marker;
-            stream.push({ type: "text_delta", contentIndex: idx, delta: marker, partial: output });
+            const mapping = PI_TOOL_MAP[cliKey];
+            const piArgs = mapping?.args(payload.args ?? {});
+            if (mapping && piArgs) {
+              const toolCall: ToolCall = {
+                type: "toolCall",
+                id: callId,
+                name: mapping.name,
+                arguments: piArgs,
+              };
+              output.content.push(toolCall);
+              const idx = output.content.length - 1;
+              openToolCalls.set(callId, idx);
+              cursorOwnedToolCalls.add(callId);
+              stream.push({ type: "toolcall_start", contentIndex: idx, partial: output });
+              stream.push({
+                type: "toolcall_end",
+                contentIndex: idx,
+                toolCall,
+                partial: output,
+              });
+            } else {
+              const label = FALLBACK_TOOL_LABEL[cliKey] ?? cliKey.replace(/ToolCall$/, "");
+              const brief = JSON.stringify(payload.args ?? {});
+              const clipped = brief.length > 160 ? brief.slice(0, 160) + "…" : brief;
+              emitTextMarker(`\n[${label}] ${clipped}\n`);
+            }
+            return;
+          }
+
+          if (tce.subtype === "completed") {
+            const formatted = formatCursorToolResult(payload);
+            if (openToolCalls.has(callId) || cursorOwnedToolCalls.has(callId)) {
+              cursorOwnedToolCalls.add(callId);
+              cursorPendingResults.set(callId, formatted);
+              openToolCalls.delete(callId);
+            } else {
+              // Unmapped tool: append a compact result under the text marker
+              const body = formatted.content.map((c) => c.text).join("\n");
+              if (body.trim()) {
+                const clipped = body.length > 400 ? body.slice(0, 400) + "…" : body;
+                emitTextMarker(`${clipped}\n`);
+              }
+            }
           }
         }
       });
@@ -610,13 +1093,12 @@ function streamCursorCli(
         child.on("close", (code) => {
           options?.signal?.removeEventListener("abort", onAbort);
 
-          if (textBlockOpen) {
-            const idx = output.content.length - 1;
-            stream.push({ type: "text_end", contentIndex: idx, content: accumulatedText, partial: output });
-            textBlockOpen = false;
-          }
+          closeThinkingBlock();
+          closeTextBlock();
 
           if (options?.signal?.aborted) {
+            pendingCursorFollowUp = null;
+            cursorExpectFollowUp = false;
             output.stopReason = "aborted";
             setTiming();
             stream.push({ type: "error", reason: "aborted", error: output });
@@ -625,7 +1107,14 @@ function streamCursorCli(
             return;
           }
 
-          if (code !== 0 && !accumulatedText) {
+          if (
+            code !== 0 &&
+            !accumulatedText &&
+            !accumulatedThinking &&
+            !output.content.some((c) => c.type === "toolCall")
+          ) {
+            pendingCursorFollowUp = null;
+            cursorExpectFollowUp = false;
             const stderr = stderrChunks.join("").trim();
             output.stopReason = "error";
             output.errorMessage = stderr || `Cursor CLI exited with code ${code}`;
@@ -636,6 +1125,17 @@ function streamCursorCli(
             return;
           }
 
+          const hasTools = output.content.some((c) => c.type === "toolCall");
+          const followThinking = bufferedFollowThinking.trim();
+          const followText = bufferedFollowText.trim();
+          if (hasTools && (followThinking || followText)) {
+            pendingCursorFollowUp = { thinking: followThinking, text: followText };
+            cursorExpectFollowUp = true;
+          } else {
+            pendingCursorFollowUp = null;
+            cursorExpectFollowUp = false;
+          }
+
           setTiming();
           stream.push({ type: "done", reason: "stop", message: output });
           stream.end();
@@ -644,6 +1144,8 @@ function streamCursorCli(
 
         child.on("error", (err) => {
           options?.signal?.removeEventListener("abort", onAbort);
+          pendingCursorFollowUp = null;
+          cursorExpectFollowUp = false;
           output.stopReason = "error";
           output.errorMessage = err.message;
           setTiming();
@@ -653,6 +1155,8 @@ function streamCursorCli(
         });
       });
     } catch (error) {
+      pendingCursorFollowUp = null;
+      cursorExpectFollowUp = false;
       output.stopReason = options?.signal?.aborted ? "aborted" : "error";
       output.errorMessage = error instanceof Error ? error.message : String(error);
       setTiming();
@@ -740,7 +1244,6 @@ function toProviderModels(defs: CursorModelDef[]) {
   });
 }
 
-
 // ---------------------------------------------------------------------------
 // Model catalog cache (non-blocking startup)
 // ---------------------------------------------------------------------------
@@ -827,6 +1330,8 @@ export default function (pi: ExtensionAPI) {
   // Background discovery is deferred to session_start so factory-only
   // invocations (e.g. --list-models) do not spawn `agent models`.
   registerCursorProvider(pi, loadModelsCache() ?? STATIC_MODELS);
+
+  registerCursorToolPassthroughs(pi);
 
   pi.on("session_start", () => {
     if (!cacheIsFresh()) {
