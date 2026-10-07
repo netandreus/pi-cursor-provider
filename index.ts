@@ -355,11 +355,59 @@ function contentBlockToText(block: TextContent | import("@mariozechner/pi-ai").I
   return `[Image: ${block.mimeType}, ~${bytes} bytes — note: image input is not supported by the Cursor Agent CLI; the visual content cannot be passed through]`;
 }
 
-function serializeContext(context: Context): string {
+/**
+ * Pi 1.x hands providers a TranscriptContext: `context.systemPrompt` is unset
+ * and the prompt lives in transcript system messages (`content` plus named
+ * `sections`). Older Pi versions set the field directly, so prefer it and
+ * replay the system messages only when it is absent. The replay mirrors
+ * pi-ai's `getCurrentSystemPrompt`.
+ */
+type SystemMessageLike = {
+  role?: string;
+  content?: unknown;
+  sections?: Record<string, string | null>;
+};
+
+function systemContentText(content: unknown): string {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  return content
+    .filter(
+      (block): block is TextContent =>
+        typeof block === "object" &&
+        block !== null &&
+        (block as TextContent).type === "text" &&
+        typeof (block as TextContent).text === "string",
+    )
+    .map((block) => block.text)
+    .join("\n");
+}
+
+export function resolveSystemPrompt(context: Context): string {
+  if (context.systemPrompt) return context.systemPrompt;
+  const messages = (context.messages ?? []) as readonly SystemMessageLike[];
+  const content: string[] = [];
+  const sections = new Map<string, string>();
+  for (const message of messages) {
+    if (message.role !== "system") continue;
+    const text = systemContentText(message.content);
+    if (text.length > 0) content.push(text);
+    for (const [name, value] of Object.entries(message.sections ?? {})) {
+      if (value === null) sections.delete(name);
+      else sections.set(name, value);
+    }
+  }
+  return [content.join("\n\n"), ...sections.values()]
+    .filter((part) => part.length > 0)
+    .join("\n\n");
+}
+
+export function serializeContext(context: Context): string {
   const lines: string[] = [];
 
-  if (context.systemPrompt) {
-    lines.push(`[System]\n${context.systemPrompt}\n`);
+  const systemPrompt = resolveSystemPrompt(context);
+  if (systemPrompt) {
+    lines.push(`[System]\n${systemPrompt}\n`);
   }
 
   for (const msg of context.messages) {

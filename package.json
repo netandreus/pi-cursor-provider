@@ -45,7 +45,9 @@
   "scripts": {
     "lint": "npx biome check",
     "format": "npx biome check --write",
-    "typecheck": "npx tsc --noEmit"
+    "typecheck": "npx tsc --noEmit",
+    "test:system-prompt": "node tests/system-prompt-transcript.mjs",
+    "test": "npm run test:system-prompt"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.4.2",
